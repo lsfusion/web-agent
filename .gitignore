@@ -1,0 +1,12 @@
+target/
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+build/
+.vscode/
+.DS_Store
+Thumbs.db
+*.log
+dist/
