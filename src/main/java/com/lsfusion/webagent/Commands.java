@@ -20,7 +20,6 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.StringReader;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
@@ -72,7 +71,7 @@ public final class Commands {
         };
     }
 
-    // args: [fileData(base64)|null, filePath|null, text|null, printerName|null, showDialog(boolean)?]
+    // args: [fileData(base64)|null, filePath|null, text|null, printerName|null, showDialog(boolean)?, charset|null]
     // printerName may carry options after ';' (name;print-sides=...;copies=N) —
     // same format the desktop client parses in lsfusion.base.PrintUtils.
     // showDialog shows the system print dialog with printerName preselected
@@ -83,6 +82,7 @@ public final class Commands {
         String text = Json.optString(args.path(2));
         String printerName = Json.optString(args.path(3));
         boolean showDialog = args.path(4).asBoolean(false);
+        String charset = Json.optString(args.path(5));
 
         Map<String, String> printOptions = new HashMap<>();
         if (printerName != null) {
@@ -106,22 +106,25 @@ public final class Commands {
                     : "Printer not found: " + name);
         }
 
-        byte[] bytes = null;
+        byte[] bytes;
         if (fileData != null) bytes = Base64.getDecoder().decode(fileData);
         else if (filePath != null) bytes = Files.readAllBytes(Path.of(filePath));
-        else if (text == null) return Json.error("print: one of fileData, filePath, text must be provided");
+        // like the desktop WriteToPrinterClientAction: text goes as raw bytes in the
+        // requested charset — READER flavors are not supported by Win32 print services
+        else if (text != null) bytes = text.getBytes(charset == null ? StandardCharsets.UTF_8 : Charset.forName(charset));
+        else return Json.error("print: one of fileData, filePath, text must be provided");
 
-        if (bytes != null && isPdf(bytes)) {
+        if (isPdf(bytes)) {
             printPdf(service, bytes, printOptions, showDialog);
         } else {
-            // non-PDF goes to the driver as-is — label printers (ZPL/ESC-POS)
-            // and plain text depend on raw pass-through
-            Doc doc = text != null
-                    ? new SimpleDoc(new StringReader(text), DocFlavor.READER.TEXT_PLAIN, null)
-                    : new SimpleDoc(new ByteArrayInputStream(bytes), DocFlavor.INPUT_STREAM.AUTOSENSE, null);
+            // non-PDF goes to the driver as-is — receipt/label printers (ZPL/ESC-POS)
+            // depend on raw pass-through, same as the desktop client
+            Doc doc = new SimpleDoc(new ByteArrayInputStream(bytes), DocFlavor.INPUT_STREAM.AUTOSENSE, null);
             service.createPrintJob().print(doc, new HashPrintRequestAttributeSet());
         }
-        return Json.result("OK");
+        // null result = success: the server side (e.g. WriteToPrinterAction) treats any
+        // non-null result as an error message, same convention as desktop and flutter
+        return Json.resultNull();
     }
 
     private static boolean isPdf(byte[] bytes) {
@@ -159,20 +162,68 @@ public final class Commands {
             if (copies != null && Integer.parseInt(copies) > 0) attrSet.add(new Copies(Integer.parseInt(copies)));
 
             try {
-                try {
-                    // NATIVE keeps the familiar Windows dialog (like the desktop client);
-                    // printDialog(attrSet) seeds it with the options above and writes the
-                    // user's selections back into attrSet, so print(attrSet) honours both
-                    attrSet.add(DialogTypeSelection.NATIVE);
-                    if (!showDialog || job.printDialog(attrSet))
-                        job.print(attrSet);
-                } catch (PrinterAbortException ignored) {
-                    // the user cancelled the driver's dialog (e.g. Save-As of
-                    // Microsoft Print to PDF) — deliberate action, not an error
+                // NATIVE keeps the familiar Windows dialog (like the desktop client);
+                // printDialog(attrSet) seeds it with the options above and writes the
+                // user's selections back into attrSet, so print(attrSet) honours both
+                attrSet.add(DialogTypeSelection.NATIVE);
+                if (showDialog) {
+                    // no-arg DialogOwner asks the JDK to open the dialog on top of all
+                    // windows — without it a background process' dialog starts behind
+                    // everything and only blinks in the taskbar
+                    attrSet.add(new DialogOwner());
+                    bringPrintDialogToFront();
                 }
+                if (!showDialog || job.printDialog(attrSet))
+                    job.print(attrSet);
             } catch (PrinterAbortException ignored) {
                 // the user cancelled the driver's dialog (e.g. Save-As of
                 // Microsoft Print to PDF) — deliberate action, not an error
+            }
+        }
+    }
+
+    // The dialog is opened by a background process: Windows denies it the foreground,
+    // so it starts behind every window and only blinks in the taskbar. toFront on the
+    // AWT owner is not enough — the native common dialog is a separate win32 window —
+    // so additionally force TOPMOST on it via SetWindowPos (allowed for background
+    // processes, unlike stealing focus) as soon as it appears.
+    private static void bringPrintDialogToFront() {
+        Thread watcher = new Thread(() -> {
+            try {
+                for (int i = 0; i < 100; i++) {
+                    Thread.sleep(100);
+                    for (java.awt.Window w : java.awt.Window.getWindows()) {
+                        if (w instanceof java.awt.Dialog && w.isShowing()) {
+                            w.setAlwaysOnTop(true);
+                            w.toFront();
+                            return;
+                        }
+                    }
+                }
+            } catch (InterruptedException ignored) {
+            }
+        }, "print-dialog-to-front");
+        watcher.setDaemon(true);
+        watcher.start();
+
+        if (System.getProperty("os.name").toLowerCase().contains("win")) {
+            // the dialog becomes the process' MainWindow; SetWindowPos needs a native
+            // call, so do it through a short-lived PowerShell instead of a JNI dependency
+            String script =
+                    "for ($i = 0; $i -lt 100; $i++) {" +
+                    "  Start-Sleep -Milliseconds 100;" +
+                    "  $h = (Get-Process -Id " + ProcessHandle.current().pid() + ").MainWindowHandle;" +
+                    "  if ($h -ne 0) {" +
+                    "    Add-Type -Namespace W -Name U -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool SetWindowPos(System.IntPtr h, System.IntPtr a, int x, int y, int cx, int cy, uint f);';" +
+                    "    [W.U]::SetWindowPos($h, [System.IntPtr](-1), 0, 0, 0, 0, 0x43) | Out-Null;" +
+                    "    break" +
+                    "  }" +
+                    "}";
+            try {
+                // -EncodedCommand sidesteps command-line quote mangling entirely
+                String encoded = Base64.getEncoder().encodeToString(script.getBytes(StandardCharsets.UTF_16LE));
+                new ProcessBuilder("powershell", "-NoProfile", "-EncodedCommand", encoded).start();
+            } catch (IOException ignored) {
             }
         }
     }
