@@ -13,11 +13,7 @@ import javax.print.PrintService;
 import javax.print.PrintServiceLookup;
 import javax.print.SimpleDoc;
 import javax.print.attribute.HashPrintRequestAttributeSet;
-import javax.print.attribute.standard.Copies;
-import javax.print.attribute.standard.Media;
-import javax.print.attribute.standard.MediaTray;
-import javax.print.attribute.standard.SheetCollate;
-import javax.print.attribute.standard.Sides;
+import javax.print.attribute.standard.*;
 import java.awt.print.PrinterAbortException;
 import java.awt.print.PrinterJob;
 import java.io.ByteArrayInputStream;
@@ -76,14 +72,17 @@ public final class Commands {
         };
     }
 
-    // args: [fileData(base64)|null, filePath|null, text|null, printerName|null]
+    // args: [fileData(base64)|null, filePath|null, text|null, printerName|null, showDialog(boolean)?]
     // printerName may carry options after ';' (name;print-sides=...;copies=N) —
     // same format the desktop client parses in lsfusion.base.PrintUtils.
+    // showDialog shows the system print dialog with printerName preselected
+    // (PRINT without NOPREVIEW), like the desktop report viewer.
     private static JsonNode print(JsonNode args) throws Exception {
         String fileData = Json.optString(args.path(0));
         String filePath = Json.optString(args.path(1));
         String text = Json.optString(args.path(2));
         String printerName = Json.optString(args.path(3));
+        boolean showDialog = args.path(4).asBoolean(false);
 
         Map<String, String> printOptions = new HashMap<>();
         if (printerName != null) {
@@ -113,7 +112,7 @@ public final class Commands {
         else if (text == null) return Json.error("print: one of fileData, filePath, text must be provided");
 
         if (bytes != null && isPdf(bytes)) {
-            printPdf(service, bytes, printOptions);
+            printPdf(service, bytes, printOptions, showDialog);
         } else {
             // non-PDF goes to the driver as-is — label printers (ZPL/ESC-POS)
             // and plain text depend on raw pass-through
@@ -136,7 +135,7 @@ public final class Commands {
 
     // PDF is rendered page by page like in the desktop client (PrintUtils.printFile):
     // GDI/XPS drivers (e.g. Microsoft Print to PDF) produce blank pages from raw PDF bytes.
-    private static void printPdf(PrintService service, byte[] bytes, Map<String, String> printOptions) throws Exception {
+    private static void printPdf(PrintService service, byte[] bytes, Map<String, String> printOptions, boolean showDialog) throws Exception {
         try (PDDocument document = PDDocument.load(bytes)) {
             PrinterJob job = PrinterJob.getPrinterJob();
             job.setPageable(new PDFPageable(document));
@@ -160,7 +159,17 @@ public final class Commands {
             if (copies != null && Integer.parseInt(copies) > 0) attrSet.add(new Copies(Integer.parseInt(copies)));
 
             try {
-                job.print(attrSet);
+                try {
+                    // NATIVE keeps the familiar Windows dialog (like the desktop client);
+                    // printDialog(attrSet) seeds it with the options above and writes the
+                    // user's selections back into attrSet, so print(attrSet) honours both
+                    attrSet.add(DialogTypeSelection.NATIVE);
+                    if (!showDialog || job.printDialog(attrSet))
+                        job.print(attrSet);
+                } catch (PrinterAbortException ignored) {
+                    // the user cancelled the driver's dialog (e.g. Save-As of
+                    // Microsoft Print to PDF) — deliberate action, not an error
+                }
             } catch (PrinterAbortException ignored) {
                 // the user cancelled the driver's dialog (e.g. Save-As of
                 // Microsoft Print to PDF) — deliberate action, not an error
