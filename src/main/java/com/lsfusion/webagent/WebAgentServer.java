@@ -11,6 +11,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.Executors;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -18,7 +19,10 @@ import java.util.logging.Logger;
 public final class WebAgentServer {
 
     private static final Logger LOG = Logger.getLogger(WebAgentServer.class.getName());
-    private static final String VERSION = "0.1.0";
+    // Stamped into the jar manifest from pom.xml by the build; no manifest when
+    // running from exploded classes (IDE), hence the "dev" fallback.
+    private static final String VERSION = Objects.requireNonNullElse(
+            WebAgentServer.class.getPackage().getImplementationVersion(), "dev");
 
     private final String host;
     private final int port;

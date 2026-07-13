@@ -7,12 +7,19 @@ param(
     [ValidateSet('app-image', 'msi', 'exe')]
     [string]$Type = 'app-image',
 
-    [string]$AppVersion = '0.1.0'
+    # Overrides the version from pom.xml.
+    [string]$AppVersion
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Resolve-Path "$PSScriptRoot\.."
 Set-Location $root
+
+if (-not $AppVersion) {
+    # jpackage (msi/exe) only accepts plain x.y.z, so strip -SNAPSHOT/-rc qualifiers.
+    $AppVersion = ([xml](Get-Content (Join-Path $root 'pom.xml'))).project.version -replace '-.*$', ''
+}
+Write-Host "==> version $AppVersion" -ForegroundColor Cyan
 
 Write-Host "==> mvn package" -ForegroundColor Cyan
 & mvn -q -DskipTests package
