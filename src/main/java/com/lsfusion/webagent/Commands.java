@@ -4,15 +4,22 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fazecast.jSerialComm.SerialPort;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.printing.PDFPageable;
 
 import javax.print.Doc;
 import javax.print.DocFlavor;
-import javax.print.DocPrintJob;
 import javax.print.PrintService;
 import javax.print.PrintServiceLookup;
 import javax.print.SimpleDoc;
 import javax.print.attribute.HashPrintRequestAttributeSet;
-import javax.print.attribute.PrintRequestAttributeSet;
+import javax.print.attribute.standard.Copies;
+import javax.print.attribute.standard.Media;
+import javax.print.attribute.standard.MediaTray;
+import javax.print.attribute.standard.SheetCollate;
+import javax.print.attribute.standard.Sides;
+import java.awt.print.PrinterAbortException;
+import java.awt.print.PrinterJob;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -39,6 +46,8 @@ import java.time.format.DateTimeFormatter;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -68,40 +77,109 @@ public final class Commands {
     }
 
     // args: [fileData(base64)|null, filePath|null, text|null, printerName|null]
+    // printerName may carry options after ';' (name;print-sides=...;copies=N) —
+    // same format the desktop client parses in lsfusion.base.PrintUtils.
     private static JsonNode print(JsonNode args) throws Exception {
         String fileData = Json.optString(args.path(0));
         String filePath = Json.optString(args.path(1));
         String text = Json.optString(args.path(2));
         String printerName = Json.optString(args.path(3));
 
-        PrintService service = printerName == null
+        Map<String, String> printOptions = new HashMap<>();
+        if (printerName != null) {
+            String[] split = printerName.split(";");
+            printerName = split[0].isEmpty() ? null : split[0];
+            for (int i = 1; i < split.length; i++) {
+                String[] entry = split[i].split("=");
+                if (entry.length == 2) printOptions.put(entry[0], entry[1]);
+            }
+        }
+
+        String name = printerName;
+        PrintService service = name == null
                 ? PrintServiceLookup.lookupDefaultPrintService()
                 : Arrays.stream(PrintServiceLookup.lookupPrintServices(null, null))
-                .filter(s -> printerName.equals(s.getName()))
+                .filter(s -> name.equals(s.getName()))
                 .findFirst().orElse(null);
         if (service == null) {
-            return Json.error(printerName == null
+            return Json.error(name == null
                     ? "No default printer found"
-                    : "Printer not found: " + printerName);
+                    : "Printer not found: " + name);
         }
 
-        Doc doc;
-        if (text != null) {
-            doc = new SimpleDoc(new StringReader(text), DocFlavor.READER.TEXT_PLAIN, null);
-        } else if (fileData != null) {
-            byte[] bytes = Base64.getDecoder().decode(fileData);
-            doc = new SimpleDoc(new ByteArrayInputStream(bytes), DocFlavor.INPUT_STREAM.AUTOSENSE, null);
-        } else if (filePath != null) {
-            InputStream in = Files.newInputStream(Path.of(filePath));
-            doc = new SimpleDoc(in, DocFlavor.INPUT_STREAM.AUTOSENSE, null);
+        byte[] bytes = null;
+        if (fileData != null) bytes = Base64.getDecoder().decode(fileData);
+        else if (filePath != null) bytes = Files.readAllBytes(Path.of(filePath));
+        else if (text == null) return Json.error("print: one of fileData, filePath, text must be provided");
+
+        if (bytes != null && isPdf(bytes)) {
+            printPdf(service, bytes, printOptions);
         } else {
-            return Json.error("print: one of fileData, filePath, text must be provided");
+            // non-PDF goes to the driver as-is — label printers (ZPL/ESC-POS)
+            // and plain text depend on raw pass-through
+            Doc doc = text != null
+                    ? new SimpleDoc(new StringReader(text), DocFlavor.READER.TEXT_PLAIN, null)
+                    : new SimpleDoc(new ByteArrayInputStream(bytes), DocFlavor.INPUT_STREAM.AUTOSENSE, null);
+            service.createPrintJob().print(doc, new HashPrintRequestAttributeSet());
         }
-
-        PrintRequestAttributeSet attrs = new HashPrintRequestAttributeSet();
-        DocPrintJob job = service.createPrintJob();
-        job.print(doc, attrs);
         return Json.result("OK");
+    }
+
+    private static boolean isPdf(byte[] bytes) {
+        return bytes.length >= 4 && bytes[0] == '%' && bytes[1] == 'P' && bytes[2] == 'D' && bytes[3] == 'F';
+    }
+
+    private static final Map<String, Sides> SIDES_VALUES = Map.of(
+            "one-sided", Sides.ONE_SIDED,
+            "two-sided-long-edge", Sides.TWO_SIDED_LONG_EDGE,
+            "two-sided-short-edge", Sides.TWO_SIDED_SHORT_EDGE);
+
+    // PDF is rendered page by page like in the desktop client (PrintUtils.printFile):
+    // GDI/XPS drivers (e.g. Microsoft Print to PDF) produce blank pages from raw PDF bytes.
+    private static void printPdf(PrintService service, byte[] bytes, Map<String, String> printOptions) throws Exception {
+        try (PDDocument document = PDDocument.load(bytes)) {
+            PrinterJob job = PrinterJob.getPrinterJob();
+            job.setPageable(new PDFPageable(document));
+            job.setPrintService(service);
+
+            HashPrintRequestAttributeSet attrSet = new HashPrintRequestAttributeSet();
+
+            String sidesValue = printOptions.get("print-sides");
+            // Map.of throws NPE on get(null), so guard the absent option
+            Sides sides = sidesValue == null ? null : SIDES_VALUES.get(sidesValue);
+            if (sides != null) attrSet.add(sides);
+
+            Media tray = getTray(service, printOptions.get("print-tray"));
+            if (tray != null) attrSet.add(tray);
+
+            String sheetCollate = printOptions.get("sheet-collate");
+            if ("true".equals(sheetCollate)) attrSet.add(SheetCollate.COLLATED);
+            else if ("false".equals(sheetCollate)) attrSet.add(SheetCollate.UNCOLLATED);
+
+            String copies = printOptions.get("copies");
+            if (copies != null && Integer.parseInt(copies) > 0) attrSet.add(new Copies(Integer.parseInt(copies)));
+
+            try {
+                job.print(attrSet);
+            } catch (PrinterAbortException ignored) {
+                // the user cancelled the driver's dialog (e.g. Save-As of
+                // Microsoft Print to PDF) — deliberate action, not an error
+            }
+        }
+    }
+
+    private static Media getTray(PrintService service, String trayName) {
+        if (trayName != null) {
+            Media[] supported = (Media[]) service.getSupportedAttributeValues(Media.class, DocFlavor.SERVICE_FORMATTED.PAGEABLE, null);
+            if (supported != null) {
+                for (Media media : supported) {
+                    if (media instanceof MediaTray && media.toString().equals(trayName)) {
+                        return media;
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     private static JsonNode getAvailablePrinters() {
@@ -127,19 +205,27 @@ public final class Commands {
         }
     }
 
-    // args: [url, path] — download URL into local file
+    // args: [url|null, path, fileData(base64)|null] — write fileData if provided,
+    // otherwise download url into the file. The web client sends bytes: its download
+    // URLs need the session cookie, which this process doesn't have (401 from
+    // RestAuthenticationEntryPoint). The url form remains for anonymous links.
     private static JsonNode writeFile(JsonNode args) {
         String url = Json.optString(args.path(0));
         String path = Json.optString(args.path(1));
+        String fileData = Json.optString(args.path(2));
         try {
-            URLConnection conn = new URL(url).openConnection();
-            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (compatible; lsFusion-web-agent)");
-            try (InputStream in = conn.getInputStream()) {
-                Files.copy(in, Path.of(path), StandardCopyOption.REPLACE_EXISTING);
+            if (fileData != null) {
+                Files.write(Path.of(path), Base64.getDecoder().decode(fileData));
+            } else {
+                URLConnection conn = new URL(url).openConnection();
+                conn.setRequestProperty("User-Agent", "Mozilla/5.0 (compatible; lsFusion-web-agent)");
+                try (InputStream in = conn.getInputStream()) {
+                    Files.copy(in, Path.of(path), StandardCopyOption.REPLACE_EXISTING);
+                }
             }
             return Json.resultNull();
         } catch (Exception e) {
-            return Json.resultB64("Exception: " + e);
+            return Json.error("Error writing file: " + e);
         }
     }
 

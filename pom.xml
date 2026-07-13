@@ -37,6 +37,14 @@
             <artifactId>jSerialComm</artifactId>
             <version>2.11.0</version>
         </dependency>
+        <!-- print: PDFs must be rendered page by page (PDFPageable + PrinterJob),
+             raw PDF bytes via DocFlavor.AUTOSENSE come out blank on GDI/XPS drivers
+             like Microsoft Print to PDF. -->
+        <dependency>
+            <groupId>org.apache.pdfbox</groupId>
+            <artifactId>pdfbox</artifactId>
+            <version>2.0.32</version>
+        </dependency>
     </dependencies>
 
     <build>
