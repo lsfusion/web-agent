@@ -7,6 +7,8 @@ import java.util.List;
 public final class Main {
 
     public static void main(String[] args) throws Exception {
+        Logging.init();
+
         String host = getOpt(args, "--host", System.getenv("WEB_AGENT_HOST"), "127.0.0.1");
         int port = Integer.parseInt(getOpt(args, "--port", System.getenv("WEB_AGENT_PORT"), "8765"));
         String token = getOpt(args, "--token", System.getenv("WEB_AGENT_TOKEN"), null);
@@ -27,4 +29,5 @@ public final class Main {
         }
         return envValue != null ? envValue : fallback;
     }
+
 }
