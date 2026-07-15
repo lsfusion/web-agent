@@ -21,6 +21,9 @@ public final class Main {
         WebAgentServer server = new WebAgentServer(host, port, allowedOrigins, token);
         Runtime.getRuntime().addShutdownHook(new Thread(server::stop, "web-agent-shutdown"));
         server.start();
+
+        if (!hasFlag(args, "--no-tray") && System.getenv("WEB_AGENT_NO_TRAY") == null)
+            Tray.install(host, port);
     }
 
     private static String getOpt(String[] args, String flag, String envValue, String fallback) {
@@ -30,4 +33,10 @@ public final class Main {
         return envValue != null ? envValue : fallback;
     }
 
+    private static boolean hasFlag(String[] args, String flag) {
+        for (String a : args) {
+            if (flag.equals(a)) return true;
+        }
+        return false;
+    }
 }

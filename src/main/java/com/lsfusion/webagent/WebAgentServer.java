@@ -21,7 +21,7 @@ public final class WebAgentServer {
     private static final Logger LOG = Logger.getLogger(WebAgentServer.class.getName());
     // Stamped into the jar manifest from pom.xml by the build; no manifest when
     // running from exploded classes (IDE), hence the "dev" fallback.
-    private static final String VERSION = Objects.requireNonNullElse(
+    static final String VERSION = Objects.requireNonNullElse(
             WebAgentServer.class.getPackage().getImplementationVersion(), "dev");
 
     private final String host;
