@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<AppInstaller
+    xmlns="http://schemas.microsoft.com/appx/appinstaller/2018"
+    Version="${VERSION}"
+    Uri="https://download.lsfusion.org/web-agent/windows/web-agent.appinstaller">
+
+    <MainPackage
+        Name="com.lsfusion.webagent"
+        Publisher="CN=Aliaksei Kirkouski, O=Aliaksei Kirkouski, L=Warsaw, S=Masovian Voivodeship, C=PL"
+        Version="${VERSION}"
+        ProcessorArchitecture="x64"
+        Uri="https://download.lsfusion.org/web-agent/windows/${MSIX_NAME}" />
+
+    <UpdateSettings>
+        <OnLaunch
+            HoursBetweenUpdateChecks="0"
+            ShowPrompt="true" />
+    </UpdateSettings>
+
+</AppInstaller>

@@ -1,0 +1,107 @@
+name: Windows MSIX
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    name: Build Windows MSIX
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Build MSIX (unsigned)
+        run: scripts/package.ps1
+        shell: pwsh
+
+      - name: Setup signtool
+        run: |
+          $kitPath = "C:\Program Files (x86)\Windows Kits\10\bin"
+          $signtool = Get-ChildItem -Path $kitPath -Filter "signtool.exe" -Recurse | Where-Object { $_.FullName -like "*\x86\*" } | Sort-Object FullName -Descending | Select-Object -First 1
+          if ($null -eq $signtool) { throw "signtool.exe not found" }
+          Write-Host "Using signtool: $($signtool.FullName)"
+          echo "SIGNTOOL_PATH=$($signtool.FullName)" >> $env:GITHUB_ENV
+        shell: pwsh
+
+      - name: Setup eSigner CKA
+        run: |
+          $url = "https://www.ssl.com/download/ssl-com-esigner-cka/"
+          curl.exe -L $url -o eSignerCKA_Setup.zip
+          Expand-Archive -Path eSignerCKA_Setup.zip -DestinationPath eSignerCKA_Setup
+          $exePath = Get-ChildItem -Path eSignerCKA_Setup -Filter "*.exe" -Recurse | Select-Object -First 1
+
+          Write-Host "Installing eSigner CKA..."
+          Start-Process -FilePath $exePath.FullName -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/LOG=install.log" -Wait
+
+          $ckaPath = "C:\Program Files (x86)\SSL Corp eSigner CKA"
+          if (!(Test-Path $ckaPath)) {
+            $ckaPath = Get-ChildItem -Path "C:\Program Files (x86)" -Filter "SSL Corp eSigner CKA" -Directory -Recurse | Select-Object -First 1 -ExpandProperty FullName
+          }
+
+          if ($null -eq $ckaPath) { throw "eSignerCKA installation failed" }
+
+          # Rename for easy use in command line
+          if (Test-Path "$ckaPath\eSigner CKA.exe") {
+            Move-Item "$ckaPath\eSigner CKA.exe" "$ckaPath\eSignerCKA.exe" -Force
+          }
+          Write-Host "eSignerCKA installed at $ckaPath"
+          echo "$ckaPath" >> $env:GITHUB_PATH
+          echo "CKA_DIR=$ckaPath" >> $env:GITHUB_ENV
+        shell: pwsh
+
+      - name: Sign MSIX with eSigner CKA
+        run: |
+          $ckaTool = Join-Path "$env:CKA_DIR" "eSignerCKATool.exe"
+          $masterKey = "C:\master.key"
+
+          Write-Host "Configuring eSignerCKATool..."
+          & "$ckaTool" config -mode product -user "${{ secrets.SS_USER_NAME }}" -pass "${{ secrets.SS_USER_PASSWORD }}" -totp "${{ secrets.SS_TOTP_SECRET }}" -key "$masterKey" -r
+
+          # Refresh certificates as per guide
+          & "$ckaTool" unload
+          & "$ckaTool" load
+
+          $CodeSigningCert = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert | Where-Object { $_.Issuer -like "*SSL.com Code Signing*" } | Select-Object -First 1
+          if ($null -eq $CodeSigningCert) { throw "Certificate not found." }
+
+          $msixPath = Get-ChildItem -Path dist/web-agent-*.msix | Select-Object -First 1
+          if ($null -eq $msixPath) { throw "MSIX file not found in dist!" }
+
+          # Sign
+          & "$env:SIGNTOOL_PATH" sign /fd sha256 /tr http://ts.ssl.com /td sha256 /sha1 "$($CodeSigningCert.Thumbprint)" "$($msixPath.FullName)"
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed" }
+
+          # Stage signed msix + appinstaller for upload
+          $outputDir = "deploy_out"
+          New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+          Move-Item -Path "$($msixPath.FullName)" -Destination (Join-Path $outputDir $msixPath.Name) -Force
+          Copy-Item -Path "dist/web-agent.appinstaller" -Destination $outputDir
+
+          # Cleanup
+          & "$ckaTool" unload
+        shell: pwsh
+
+      - name: Upload to CDN via FTP
+        uses: sand4rt/ftp-deployer@v1.8
+        with:
+          host: ${{ secrets.SFTP_HOST }}
+          username: ${{ secrets.SFTP_USERNAME }}
+          password: ${{ secrets.SFTP_PASSWORD }}
+          port: 21
+          local_folder: deploy_out/
+          remote_folder: web-agent/windows/
+          cleanup: false
+
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-msix
+          path: deploy_out/
