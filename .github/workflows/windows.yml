@@ -100,7 +100,7 @@ jobs:
         shell: pwsh
 
       - name: Upload to CDN via FTP
-        uses: sand4rt/ftp-deployer@v1.8
+        uses: sand4rt/ftp-deployer@v1.10
         with:
           host: ${{ secrets.SFTP_HOST }}
           username: ${{ secrets.SFTP_USERNAME }}
@@ -111,7 +111,7 @@ jobs:
           cleanup: false
 
       - name: Upload jar via FTP
-        uses: sand4rt/ftp-deployer@v1.8
+        uses: sand4rt/ftp-deployer@v1.10
         with:
           host: ${{ secrets.SFTP_HOST }}
           username: ${{ secrets.SFTP_USERNAME }}
