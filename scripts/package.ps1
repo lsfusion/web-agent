@@ -100,16 +100,16 @@ if ($Type -eq 'msix') {
         $makeappx = $found.FullName
     }
     Write-Host "==> MakeAppx pack" -ForegroundColor Cyan
-    $msixName = "web-agent-$msixVersion.msix"
+    $msixName = "lsfusion-web-agent-$msixVersion.msix"
     # quiet on success (it lists every packed file), full output on failure
     $packOut = & $makeappx pack /d $msixStaging /p (Join-Path $dist $msixName) /o 2>&1
     if ($LASTEXITCODE -ne 0) { $packOut | Write-Host; throw "MakeAppx failed" }
     $packOut | Where-Object { $_ } | Select-Object -Last 1 | Write-Host
 
-    (Get-Content (Join-Path $root 'packaging\msix\web-agent.appinstaller.template')) `
+    (Get-Content (Join-Path $root 'packaging\msix\lsfusion-web-agent.appinstaller.template')) `
         -replace '\$\{VERSION\}', $msixVersion `
         -replace '\$\{MSIX_NAME\}', $msixName `
-        | Out-File (Join-Path $dist 'web-agent.appinstaller') -Encoding utf8
+        | Out-File (Join-Path $dist 'lsfusion-web-agent.appinstaller') -Encoding utf8
 }
 
 Write-Host "==> Done. Output in $dist" -ForegroundColor Green

@@ -72,7 +72,7 @@ jobs:
           $CodeSigningCert = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert | Where-Object { $_.Issuer -like "*SSL.com Code Signing*" } | Select-Object -First 1
           if ($null -eq $CodeSigningCert) { throw "Certificate not found." }
 
-          $msixPath = Get-ChildItem -Path dist/web-agent-*.msix | Select-Object -First 1
+          $msixPath = Get-ChildItem -Path dist/lsfusion-web-agent-*.msix | Select-Object -First 1
           if ($null -eq $msixPath) { throw "MSIX file not found in dist!" }
 
           # Sign
@@ -83,7 +83,7 @@ jobs:
           $outputDir = "deploy_out"
           New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
           Move-Item -Path "$($msixPath.FullName)" -Destination (Join-Path $outputDir $msixPath.Name) -Force
-          Copy-Item -Path "dist/web-agent.appinstaller" -Destination $outputDir
+          Copy-Item -Path "dist/lsfusion-web-agent.appinstaller" -Destination $outputDir
 
           # Cleanup
           & "$ckaTool" unload

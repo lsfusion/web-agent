@@ -2,7 +2,7 @@
 <AppInstaller
     xmlns="http://schemas.microsoft.com/appx/appinstaller/2018"
     Version="${VERSION}"
-    Uri="https://download.lsfusion.org/web-agent/windows/web-agent.appinstaller">
+    Uri="https://download.lsfusion.org/web-agent/windows/lsfusion-web-agent.appinstaller">
 
     <MainPackage
         Name="com.lsfusion.webagent"
