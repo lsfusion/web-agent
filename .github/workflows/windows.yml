@@ -22,6 +22,16 @@ jobs:
         run: scripts/package.ps1
         shell: pwsh
 
+      # the fat jar is the cross-platform fallback: runs anywhere with Java 17+
+      # (systemd/NSSM services, macOS, distros without an installer)
+      - name: Stage jar
+        run: |
+          $version = ([xml](Get-Content pom.xml)).project.version -replace '-.*$', ''
+          New-Item -ItemType Directory -Force -Path deploy_jar | Out-Null
+          Copy-Item target/web-agent.jar "deploy_jar/lsfusion-web-agent-$version.jar"
+          Get-ChildItem deploy_jar
+        shell: pwsh
+
       - name: Setup signtool
         run: |
           $kitPath = "C:\Program Files (x86)\Windows Kits\10\bin"
@@ -100,8 +110,21 @@ jobs:
           remote_folder: web-agent/windows/
           cleanup: false
 
+      - name: Upload jar via FTP
+        uses: sand4rt/ftp-deployer@v1.8
+        with:
+          host: ${{ secrets.SFTP_HOST }}
+          username: ${{ secrets.SFTP_USERNAME }}
+          password: ${{ secrets.SFTP_PASSWORD }}
+          port: 21
+          local_folder: deploy_jar/
+          remote_folder: web-agent/jar/
+          cleanup: false
+
       - name: Upload Windows build
         uses: actions/upload-artifact@v6
         with:
           name: windows-msix
-          path: deploy_out/
+          path: |
+            deploy_out/
+            deploy_jar/
