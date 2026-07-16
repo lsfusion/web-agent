@@ -5,7 +5,9 @@ import com.formdev.flatlaf.FlatLightLaf;
 
 import javax.imageio.ImageIO;
 import javax.swing.JDialog;
+import javax.swing.JFrame;
 import javax.swing.JMenuItem;
+import javax.swing.JOptionPane;
 import javax.swing.JPopupMenu;
 import javax.swing.SwingUtilities;
 import javax.swing.UIManager;
@@ -162,6 +164,24 @@ public final class Tray {
             return out.contains("0x0");
         } catch (Exception e) {
             return false;
+        }
+    }
+
+    // A themed modal dialog for a fatal startup problem, shown before the tray
+    // exists. Always-on-top with a temporary owner, since a background process'
+    // dialog otherwise opens behind every window. No-op (logged) when headless.
+    static void showStartupError(String message) {
+        try {
+            applyTheme();
+            JFrame owner = new JFrame();
+            owner.setUndecorated(true);
+            owner.setAlwaysOnTop(true);
+            owner.setLocationRelativeTo(null);
+            owner.setVisible(true);
+            JOptionPane.showMessageDialog(owner, message, "lsFusion Web Agent", JOptionPane.WARNING_MESSAGE);
+            owner.dispose();
+        } catch (Exception e) {
+            LOG.log(Level.WARNING, "failed to show startup error dialog", e);
         }
     }
 

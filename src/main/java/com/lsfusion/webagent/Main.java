@@ -1,10 +1,14 @@
 package com.lsfusion.webagent;
 
+import java.net.BindException;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.logging.Logger;
 
 public final class Main {
+
+    private static final Logger LOG = Logger.getLogger(Main.class.getName());
 
     public static void main(String[] args) throws Exception {
         Logging.init();
@@ -18,12 +22,26 @@ public final class Main {
                 ? Collections.singletonList("*")
                 : Arrays.asList(originsCsv.split(","));
 
+        boolean gui = !hasFlag(args, "--no-tray") && System.getenv("WEB_AGENT_NO_TRAY") == null;
+
         WebAgentServer server = new WebAgentServer(host, port, allowedOrigins, token);
         Runtime.getRuntime().addShutdownHook(new Thread(server::stop, "web-agent-shutdown"));
-        server.start();
+        try {
+            server.start();
+        } catch (BindException e) {
+            // by far the most common startup failure: the port is taken, almost
+            // always because an agent is already running. Log a plain-language
+            // line (not the useless stack trace) and, in GUI mode, show a real
+            // dialog instead of the jpackage launcher's generic "Failed to
+            // launch JVM". Returning exits 0, which suppresses that dialog — a
+            // second launch of an already-running agent is not a user-facing error.
+            String msg = "Port " + port + " is already in use — lsFusion Web Agent may already be running.";
+            LOG.severe(msg + " (bind failed on " + host + ":" + port + ")");
+            if (gui) Tray.showStartupError(msg);
+            return;
+        }
 
-        if (!hasFlag(args, "--no-tray") && System.getenv("WEB_AGENT_NO_TRAY") == null)
-            Tray.install(host, port);
+        if (gui) Tray.install(host, port);
     }
 
     private static String getOpt(String[] args, String flag, String envValue, String fallback) {
