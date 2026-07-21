@@ -56,8 +56,14 @@ jobs:
           remote_folder: web-agent/linux/
           cleanup: false
 
-      - name: Upload Linux build
+      - name: Upload DEB artifact
         uses: actions/upload-artifact@v6
         with:
-          name: linux-packages
-          path: deploy_out/
+          name: linux-deb
+          path: deploy_out/*.deb
+
+      - name: Upload RPM artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux-rpm
+          path: deploy_out/*.rpm

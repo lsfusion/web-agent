@@ -125,6 +125,10 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: windows-msix
-          path: |
-            deploy_out/
-            deploy_jar/
+          path: deploy_out/
+
+      - name: Upload jar
+        uses: actions/upload-artifact@v6
+        with:
+          name: jar
+          path: deploy_jar/
