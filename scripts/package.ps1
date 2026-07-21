@@ -1,25 +1,32 @@
-# Build the web-agent Windows package.
-# Run from the project root:  pwsh scripts\package.ps1 [-Type msix|app-image]
-#   msix (default): jpackage app-image -> AppxManifest + assets -> MakeAppx pack
-#                   -> dist\web-agent-<v4>.msix + dist\web-agent.appinstaller.
-#                   Unsigned - CI signs it. Needs the Windows 10/11 SDK for
-#                   MakeAppx.exe (or point $env:MAKEAPPX at it directly).
-#   app-image: stops after jpackage - a runnable dist\web-agent\web-agent.exe
-#              with the trimmed runtime, no Windows SDK needed.
+# Build a web-agent package for the current OS.
+# Windows:  pwsh scripts\package.ps1 [-Type msix|app-image]     (default msix)
+#   msix: jpackage app-image -> AppxManifest + assets -> MakeAppx pack
+#         -> dist\lsfusion-web-agent-<v4>.msix + dist\lsfusion-web-agent.appinstaller.
+#         Unsigned - CI signs it. Needs the Windows 10/11 SDK for MakeAppx.exe
+#         (or point $env:MAKEAPPX at it directly).
+# Linux:    pwsh scripts/package.ps1 [-Type deb|rpm|app-image]  (default deb)
+#   deb/rpm: jpackage native package -> dist/lsfusion-web-agent-<version>.deb|.rpm
+#            (rpm on a Debian-family host needs rpmbuild: apt install rpm)
+# app-image (both): stops after jpackage - a runnable dist/web-agent/ image
+#                   with the trimmed runtime, no extra tooling needed.
 # Requires JDK 17+ on PATH (or set $env:JAVA_HOME).
 
 [CmdletBinding()]
 param(
-    [ValidateSet('msix', 'app-image')]
-    [string]$Type = 'msix',
+    [ValidateSet('msix', 'app-image', 'deb', 'rpm')]
+    [string]$Type,
 
     # Overrides the version from pom.xml.
     [string]$AppVersion
 )
 
 $ErrorActionPreference = 'Stop'
-$root = Resolve-Path "$PSScriptRoot\.."
+$root = Resolve-Path "$PSScriptRoot/.."
 Set-Location $root
+
+if (-not $Type) { $Type = if ($IsWindows) { 'msix' } else { 'deb' } }
+if ($IsWindows -and $Type -in @('deb', 'rpm')) { throw "$Type packages are built on Linux" }
+if (-not $IsWindows -and $Type -eq 'msix') { throw "msix packages are built on Windows" }
 
 if (-not $AppVersion) {
     # jpackage and MSIX only accept numeric versions, so strip -SNAPSHOT/-rc qualifiers.
@@ -31,10 +38,10 @@ Write-Host "==> mvn package" -ForegroundColor Cyan
 & mvn -q -DskipTests package
 if ($LASTEXITCODE -ne 0) { throw "Maven build failed" }
 
-$jar = Join-Path $root 'target\web-agent.jar'
+$jar = Join-Path $root 'target/web-agent.jar'
 if (-not (Test-Path $jar)) { throw "Expected fat jar at $jar" }
 
-$staging = Join-Path $root 'target\jpackage-input'
+$staging = Join-Path $root 'target/jpackage-input'
 $dist    = Join-Path $root 'dist'
 Remove-Item -Recurse -Force $staging, $dist -ErrorAction SilentlyContinue | Out-Null
 New-Item -ItemType Directory -Force -Path $staging, $dist | Out-Null
@@ -42,13 +49,30 @@ Copy-Item $jar $staging
 
 $jpackage = 'jpackage'
 if ($env:JAVA_HOME) {
-    $candidate = Join-Path $env:JAVA_HOME 'bin\jpackage.exe'
+    $candidate = Join-Path $env:JAVA_HOME 'bin' ($IsWindows ? 'jpackage.exe' : 'jpackage')
     if (Test-Path $candidate) { $jpackage = $candidate }
 }
 
+# No icon for deb/rpm: on Linux the icon only feeds the desktop entry, and any
+# desktop entry makes jpackage emit an xdg-desktop-menu postinst that fails the
+# whole install on headless systems (servers, containers) with no menu dirs.
+# A proper desktop entry + autostart will come later with a tolerant postinst.
 $iconArgs = @()
-$icon = Join-Path $root 'packaging\windows\web-agent.ico'
-if (Test-Path $icon) { $iconArgs = @('--icon', $icon) }
+if ($Type -notin @('deb', 'rpm')) {
+    $icon = Join-Path $root ($IsWindows ? 'packaging/windows/web-agent.ico' : 'packaging/linux/web-agent.png')
+    if (Test-Path $icon) { $iconArgs = @('--icon', $icon) }
+}
+
+# deb/rpm metadata; the package is named lsfusion-web-agent (like the installer
+# files on download.lsfusion.org), while the launcher stays web-agent
+$typeArgs = @()
+if ($Type -in @('deb', 'rpm')) {
+    $typeArgs = @(
+        '--linux-package-name', 'lsfusion-web-agent',
+        '--vendor', 'lsFusion',
+        '--description', 'Local helper service for the lsFusion web client'
+    )
+}
 
 # Trim the bundled runtime to just the modules the agent needs. Baseline from:
 #   jdeps --multi-release 21 --print-module-deps --ignore-missing-deps target\web-agent.jar
@@ -58,10 +82,11 @@ if (Test-Path $icon) { $iconArgs = @('--icon', $icon) }
 #                   (merged into java.base in JDK 22+; drop when the build JDK moves on)
 $modules = 'java.base,java.desktop,java.sql,jdk.httpserver,jdk.charsets,jdk.crypto.ec'
 
-# both types build the app-image; msix additionally packs it below
-Write-Host "==> jpackage --type app-image" -ForegroundColor Cyan
+# msix builds on top of an app-image; deb/rpm are produced by jpackage directly
+$jpType = if ($Type -eq 'msix') { 'app-image' } else { $Type }
+Write-Host "==> jpackage --type $jpType" -ForegroundColor Cyan
 & $jpackage `
-    --type app-image `
+    --type $jpType `
     --name web-agent `
     --app-version $AppVersion `
     --input $staging `
@@ -71,8 +96,17 @@ Write-Host "==> jpackage --type app-image" -ForegroundColor Cyan
     --add-modules $modules `
     --java-options '-Xms32m' `
     --java-options '-Xmx256m' `
-    @iconArgs
+    @iconArgs `
+    @typeArgs
 if ($LASTEXITCODE -ne 0) { throw "jpackage failed" }
+
+if ($Type -in @('deb', 'rpm')) {
+    # jpackage names the file by distro convention (…_amd64.deb / …-1.x86_64.rpm);
+    # publish under the same simple scheme as the other installers
+    $pkg = Get-ChildItem (Join-Path $dist "*.$Type") | Select-Object -First 1
+    if ($null -eq $pkg) { throw "jpackage did not produce a .$Type package" }
+    Move-Item $pkg.FullName (Join-Path $dist "lsfusion-web-agent-$AppVersion.$Type") -Force
+}
 
 if ($Type -eq 'msix') {
     # MSIX requires a 4-part numeric version (1.0.0 -> 1.0.0.0).
@@ -81,12 +115,12 @@ if ($Type -eq 'msix') {
     $msixVersion = ($vParts[0..3]) -join '.'
 
     Write-Host "==> staging MSIX layout" -ForegroundColor Cyan
-    $msixStaging = Join-Path $root 'target\msix-staging'
+    $msixStaging = Join-Path $root 'target/msix-staging'
     Remove-Item -Recurse -Force $msixStaging -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $msixStaging | Out-Null
-    Copy-Item (Join-Path $dist 'web-agent\*') $msixStaging -Recurse
-    Copy-Item (Join-Path $root 'packaging\msix\assets') (Join-Path $msixStaging 'Assets') -Recurse
-    (Get-Content (Join-Path $root 'packaging\msix\AppxManifest.xml.template')) `
+    Copy-Item (Join-Path $dist 'web-agent/*') $msixStaging -Recurse
+    Copy-Item (Join-Path $root 'packaging/msix/assets') (Join-Path $msixStaging 'Assets') -Recurse
+    (Get-Content (Join-Path $root 'packaging/msix/AppxManifest.xml.template')) `
         -replace '\$\{VERSION\}', $msixVersion `
         | Out-File (Join-Path $msixStaging 'AppxManifest.xml') -Encoding utf8
 
@@ -106,7 +140,7 @@ if ($Type -eq 'msix') {
     if ($LASTEXITCODE -ne 0) { $packOut | Write-Host; throw "MakeAppx failed" }
     $packOut | Where-Object { $_ } | Select-Object -Last 1 | Write-Host
 
-    (Get-Content (Join-Path $root 'packaging\msix\lsfusion-web-agent.appinstaller.template')) `
+    (Get-Content (Join-Path $root 'packaging/msix/lsfusion-web-agent.appinstaller.template')) `
         -replace '\$\{VERSION\}', $msixVersion `
         -replace '\$\{MSIX_NAME\}', $msixName `
         | Out-File (Join-Path $dist 'lsfusion-web-agent.appinstaller') -Encoding utf8

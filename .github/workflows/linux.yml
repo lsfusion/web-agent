@@ -1,0 +1,63 @@
+name: Linux Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    name: Build DEB + RPM
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # rpmbuild lets jpackage produce .rpm on a Debian-family host;
+      # binutils provides objcopy, which jlink needs to strip the runtime
+      - name: Install packaging tools
+        run: sudo apt-get update && sudo apt-get install -y rpm fakeroot binutils
+
+      - name: Build DEB
+        run: scripts/package.ps1 -Type deb
+        shell: pwsh
+
+      - name: Stage DEB
+        run: |
+          $version = ([xml](Get-Content pom.xml)).project.version -replace '-.*$', ''
+          New-Item -ItemType Directory -Force -Path deploy_out | Out-Null
+          Copy-Item "dist/lsfusion-web-agent-$version.deb" deploy_out/
+        shell: pwsh
+
+      - name: Build RPM
+        run: scripts/package.ps1 -Type rpm
+        shell: pwsh
+
+      - name: Stage RPM
+        run: |
+          $version = ([xml](Get-Content pom.xml)).project.version -replace '-.*$', ''
+          Copy-Item "dist/lsfusion-web-agent-$version.rpm" deploy_out/
+          Get-ChildItem deploy_out
+        shell: pwsh
+
+      - name: Upload to CDN via FTP
+        uses: sand4rt/ftp-deployer@v1.10
+        with:
+          host: ${{ secrets.SFTP_HOST }}
+          username: ${{ secrets.SFTP_USERNAME }}
+          password: ${{ secrets.SFTP_PASSWORD }}
+          port: 21
+          local_folder: deploy_out/
+          remote_folder: web-agent/linux/
+          cleanup: false
+
+      - name: Upload Linux build
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux-packages
+          path: deploy_out/
