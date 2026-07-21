@@ -1,0 +1,13 @@
+name: Build All Platforms
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    uses: ./.github/workflows/windows.yml
+    secrets: inherit
+
+  linux:
+    uses: ./.github/workflows/linux.yml
+    secrets: inherit
